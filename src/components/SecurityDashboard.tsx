@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { useAuthStore } from '../store/auth';
-import { Search, UserCircle, QrCode, Scan, ShieldAlert, ArrowRightCircle, ArrowLeftCircle, XCircle } from 'lucide-react';
+import { Search, UserCircle, QrCode, Scan, ShieldAlert, ArrowRightCircle, ArrowLeftCircle, XCircle, CheckCircle2 } from 'lucide-react';
 import axios from 'axios';
 import { Html5QrcodeScanner } from 'html5-qrcode';
 

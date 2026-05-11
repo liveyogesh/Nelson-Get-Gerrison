@@ -1,6 +1,0 @@
-{
-  "name": "Nelson Garrison",
-  "description": "Hospital Access Control and Digital Gatepass Management Platform for Nelson Hospital",
-  "requestFramePermissions": ["camera"],
-  "majorCapabilities": ["auth", "dashboard", "reporting"]
-}

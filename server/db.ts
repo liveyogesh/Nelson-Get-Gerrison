@@ -165,27 +165,19 @@ export const initDB = async () => {
       role_name VARCHAR(255) NOT NULL UNIQUE,
       role_code VARCHAR(100) NOT NULL UNIQUE,
       description TEXT,
-      active_status BOOLEAN DEFAULT TRUE,
-      deleted_by INT UNSIGNED NULL,
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
       updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-      deleted_at DATETIME NULL,
-      FOREIGN KEY (deleted_by) REFERENCES auth_users(id) ON DELETE SET NULL,
-      INDEX idx_roles_active (active_status)
+      deleted_at DATETIME NULL
     );
 
     CREATE TABLE IF NOT EXISTS auth_permissions (
       id INT AUTO_INCREMENT PRIMARY KEY,
       permission_key VARCHAR(255) NOT NULL UNIQUE,
       module_name VARCHAR(100) NOT NULL,
-      permission_group VARCHAR(100),
       description TEXT,
-      active_status BOOLEAN DEFAULT TRUE,
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
       updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-      deleted_at DATETIME NULL,
-      INDEX idx_perms_module (module_name),
-      INDEX idx_perms_active (active_status)
+      deleted_at DATETIME NULL
     );
 
     CREATE TABLE IF NOT EXISTS auth_role_permissions (

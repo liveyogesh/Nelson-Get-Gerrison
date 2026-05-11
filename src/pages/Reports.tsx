@@ -4,7 +4,7 @@ import Layout from '../components/Layout';
 import { useAuthStore } from '../store/auth';
 import * as XLSX from 'xlsx';
 import jsPDF from 'jspdf';
-import autoTable from 'jspdf-autotable';
+import 'jspdf-autotable';
 import { format } from 'date-fns';
 
 export default function Reports() {
@@ -67,7 +67,7 @@ export default function Reports() {
     const headers = Object.keys(data[0]);
     const body = data.map(obj => Object.values(obj).map(v => String(v)));
     
-    autoTable(doc, {
+    (doc as any).autoTable({
       head: [headers],
       body: body,
       startY: 20,
