@@ -14,7 +14,8 @@ import {
   Trash2,
   Lock,
   UserCircle,
-  PieChart
+  PieChart,
+  Monitor
 } from 'lucide-react';
 import AdminWorkflowBuilder from '../components/AdminWorkflowBuilder';
 import AdminVisitorTypes from '../components/AdminVisitorTypes';
@@ -26,6 +27,8 @@ import AdminRestrictedZones from '../components/AdminRestrictedZones';
 
 import AdminUsersRoles from '../components/AdminUsersRoles';
 import AdminDepartments from '../components/AdminDepartments';
+import AdminMasters from '../components/AdminMasters';
+import AdminSessions from '../components/AdminSessions';
 
 const AdminPanel: React.FC = () => {
   const [activeTab, setActiveTab] = useState('analytics');
@@ -41,13 +44,15 @@ const AdminPanel: React.FC = () => {
         </div>
 
         {/* Admin Navigation Rails */}
-        <div className="grid grid-cols-2 md:grid-cols-5 lg:grid-cols-10 gap-3">
+        <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-6 gap-3">
           {[
             { id: 'analytics', name: 'Dashboard', icon: PieChart },
             { id: 'users', name: 'Users & Roles', icon: Users },
             { id: 'employees', name: 'Staff', icon: UserCircle },
             { id: 'deps', name: 'Depts', icon: Building2 },
             { id: 'workflow', name: 'Workflows', icon: Workflow },
+            { id: 'masters', name: 'Masters', icon: Database },
+            { id: 'sessions', name: 'Sessions', icon: Monitor },
             { id: 'visitor_types', name: 'Vis. Types', icon: UserPlus },
             { id: 'restricted_zones', name: 'Zones', icon: Lock },
             { id: 'blacklist', name: 'Blacklist', icon: Shield },
@@ -89,6 +94,14 @@ const AdminPanel: React.FC = () => {
             <AdminDepartments />
           )}
 
+          {activeTab === 'masters' && (
+            <AdminMasters />
+          )}
+
+          {activeTab === 'sessions' && (
+            <AdminSessions />
+          )}
+
           {activeTab === 'workflow' && (
             <AdminWorkflowBuilder />
           )}
@@ -109,7 +122,7 @@ const AdminPanel: React.FC = () => {
             <AdminConfig />
           )}
 
-          {(activeTab !== 'analytics' && activeTab !== 'users' && activeTab !== 'employees' && activeTab !== 'workflow' && activeTab !== 'visitor_types' && activeTab !== 'blacklist' && activeTab !== 'restricted_zones' && activeTab !== 'config') && (
+          {(activeTab !== 'analytics' && activeTab !== 'users' && activeTab !== 'employees' && activeTab !== 'workflow' && activeTab !== 'visitor_types' && activeTab !== 'blacklist' && activeTab !== 'restricted_zones' && activeTab !== 'config' && activeTab !== 'deps' && activeTab !== 'masters' && activeTab !== 'sessions') && (
             <div className="flex flex-col items-center justify-center h-[500px] text-center">
               <div className="p-4 bg-slate-50 rounded-full mb-4 border border-slate-100">
                 <Settings2 className="w-10 h-10 text-slate-300" />

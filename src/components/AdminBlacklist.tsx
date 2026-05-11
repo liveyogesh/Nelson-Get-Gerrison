@@ -14,11 +14,16 @@ export default function AdminBlacklist() {
     try {
       const { data } = await axios.get(`/api/visitors/blacklist`);
       setBlacklist(Array.isArray(data) ? data : []);
-    } catch (e) { console.error(e); }
-    setLoading(false);
+    } catch (e) {
+      console.error(e);
+    } finally {
+      setLoading(false);
+    }
   };
 
-  useEffect(() => { fetchBlacklist(); }, []);
+  useEffect(() => { 
+    fetchBlacklist(); 
+  }, []);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();

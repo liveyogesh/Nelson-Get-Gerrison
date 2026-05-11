@@ -13,14 +13,11 @@ export default function AdminRestrictedZones() {
   const [editingId, setEditingId] = useState(null);
 
   const fetchZones = async () => {
-    setLoading(true);
     try {
       const { data } = await axios.get('/api/zones');
       setZones(data);
     } catch (e) {
       console.error(e);
-    } finally {
-      setLoading(false);
     }
   };
 
@@ -33,10 +30,7 @@ export default function AdminRestrictedZones() {
     }
   };
 
-  useEffect(() => {
-    fetchZones();
-    fetchFacilities();
-  }, []);
+  useEffect(() => { fetchZones(); fetchFacilities(); }, []);
 
   const handleCreateOrEdit = async (e: React.FormEvent) => {
     e.preventDefault();

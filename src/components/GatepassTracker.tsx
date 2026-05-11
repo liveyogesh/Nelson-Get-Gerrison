@@ -25,10 +25,9 @@ export default function GatepassTracker() {
       const { data } = await axios.get('/api/gatepass/my-requests');
       setRequests(Array.isArray(data) ? data : []);
     } catch (e) { console.error(e); }
-    setLoading(false);
   };
 
-  useEffect(() => { fetchRequests(); }, []);
+  useEffect(() => { fetchBlacklist(); }, []);
 
   const [escalatingId, setEscalatingId] = useState<number | null>(null);
   const [cancellingId, setCancellingId] = useState<number | null>(null);
@@ -175,7 +174,7 @@ export default function GatepassTracker() {
                   </div>
                 )}
                 
-                {['PENDING', 'UNDER_REVIEW'].includes(pass.current_status) && (
+                {['PENDING', 'UNDER_REVIEW', 'EMERGENCY_PENDING', 'PRIORITY_PENDING', 'ESCALATED', 'MANUALLY_ESCALATED'].includes(pass.current_status) && (
                   <div className="mb-6 space-y-4">
                     {escalatingId === pass.request_id ? (
                       <div className="bg-purple-50 p-4 rounded-2xl border border-purple-200">
@@ -203,12 +202,10 @@ export default function GatepassTracker() {
                       </div>
                     ) : (
                       <div className="flex flex-col sm:flex-row gap-3">
-                        {['PENDING', 'UNDER_REVIEW'].includes(pass.current_status) && (
+                        {['PENDING', 'UNDER_REVIEW', 'EMERGENCY_PENDING', 'PRIORITY_PENDING'].includes(pass.current_status) && (!pass.approvals || pass.approvals.length === 0) && (
                           <button onClick={() => { setEscalatingId(pass.request_id); setCancellingId(null); setReason(''); setTargetRole('HOD'); }} className="flex-1 border py-2.5 rounded-xl text-sm font-bold border-purple-200 text-purple-600 hover:bg-purple-50">Escalate Now</button>
                         )}
-                        {['PENDING', 'UNDER_REVIEW', 'ESCALATED', 'MANUALLY_ESCALATED', 'PRIORITY_PENDING', 'EMERGENCY_PENDING'].includes(pass.current_status) && (
-                          <button onClick={() => { setCancellingId(pass.request_id); setEscalatingId(null); setReason(''); }} className="flex-1 border py-2.5 rounded-xl text-sm font-bold border-rose-200 text-rose-600 hover:bg-rose-50">Cancel Request</button>
-                        )}
+                        <button onClick={() => { setCancellingId(pass.request_id); setEscalatingId(null); setReason(''); }} className="flex-1 border py-2.5 rounded-xl text-sm font-bold border-rose-200 text-rose-600 hover:bg-rose-50">Cancel Request</button>
                       </div>
                     )}
                   </div>

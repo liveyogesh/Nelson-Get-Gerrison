@@ -7,18 +7,22 @@ import jsPDF from 'jspdf';
 import 'jspdf-autotable';
 import { format } from 'date-fns';
 
+const today = new Date();
+const lastWeek = new Date(today.getTime() - 7 * 24 * 60 * 60 * 1000);
+const defaultStartDate = format(lastWeek, 'yyyy-MM-dd');
+const defaultEndDate = format(today, 'yyyy-MM-dd');
+
 export default function Reports() {
   const { user } = useAuthStore();
   const [reportType, setReportType] = useState('staff_movements');
-  const [startDate, setStartDate] = useState(format(new Date(Date.now() - 7 * 24 * 60 * 60 * 1000), 'yyyy-MM-dd'));
-  const [endDate, setEndDate] = useState(format(new Date(), 'yyyy-MM-dd'));
+  const [startDate, setStartDate] = useState(defaultStartDate);
+  const [endDate, setEndDate] = useState(defaultEndDate);
   const [departmentId, setDepartmentId] = useState('all');
   
   const [data, setData] = useState<any[]>([]);
   const [loading, setLoading] = useState(false);
 
   const fetchReport = async () => {
-    setLoading(true);
     let endpoint = '';
     if (reportType === 'staff_movements') endpoint = '/api/reports/daily-staff-movements';
     else if (reportType === 'visitor_analytics') endpoint = '/api/reports/visitor-analytics';
@@ -32,12 +36,9 @@ export default function Reports() {
       console.error(e);
       setData([]);
     }
-    setLoading(false);
   };
 
-  useEffect(() => {
-    fetchReport();
-  }, [reportType, startDate, endDate, departmentId]);
+  useEffect(() => { fetchBlacklist(); }, [reportType, startDate, endDate, departmentId]);
 
   const exportToCSV = () => {
     if (!data.length) return;

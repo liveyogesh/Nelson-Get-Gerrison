@@ -13,11 +13,7 @@ export default function AdminUsersRoles() {
   const [confirmLockUser, setConfirmLockUser] = useState<any>(null);
   const [selectedRole, setSelectedRole] = useState<any>(null); // For permission management
 
-  useEffect(() => {
-    fetchData();
-  }, []);
-
-  const fetchData = async () => {
+    const fetchData = async () => {
     try {
       setLoading(true);
       const [uRes, rRes, pRes] = await Promise.all([
@@ -35,6 +31,8 @@ export default function AdminUsersRoles() {
       setLoading(false);
     }
   };
+
+  useEffect(() => { fetchData(); }, []);
 
   const handleSaveUser = async (e: React.FormEvent) => {
     e.preventDefault();

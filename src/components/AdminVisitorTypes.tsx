@@ -11,15 +11,13 @@ export default function AdminVisitorTypes() {
   const [formData, setFormData] = useState({ type_name: '', description: '', access_level: 'STANDARD', active_status: true });
 
   const fetchTypes = async () => {
-    setLoading(true);
     try {
       const { data } = await axios.get(`/api/visitors/types`);
       setTypes(Array.isArray(data) ? data : []);
     } catch (e) { console.error(e); }
-    setLoading(false);
   };
 
-  useEffect(() => { fetchTypes(); }, []);
+  useEffect(() => { fetchBlacklist(); }, []);
 
   const handleDelete = async (id: number) => {
     try {

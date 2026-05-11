@@ -10,10 +10,6 @@ export default function AdminConfig() {
   const [isSaving, setIsSaving] = useState(false);
   const [saved, setSaved] = useState(false);
 
-  useEffect(() => {
-    fetchConfig();
-  }, []);
-
   const fetchConfig = async () => {
     try {
       const { data } = await axios.get('/api/config');
@@ -25,6 +21,8 @@ export default function AdminConfig() {
       console.error(e);
     }
   };
+
+  useEffect(() => { fetchConfig(); }, []);
 
   const handleSave = async (e: React.FormEvent) => {
     e.preventDefault();

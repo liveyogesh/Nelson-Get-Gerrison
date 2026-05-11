@@ -48,13 +48,11 @@ const VisitorRegistry: React.FC = () => {
   });
 
   const fetchVisitors = async () => {
-    setLoading(true);
     try {
       const q = new URLSearchParams({ ...filters, search }).toString();
       const { data } = await axios.get(`/api/visitors/registry?${q}`);
       setVisitors(Array.isArray(data) ? data : []);
     } catch (e) { console.error(e); }
-    setLoading(false);
   };
 
   const fetchVisitorTypes = async () => {
@@ -85,12 +83,10 @@ const VisitorRegistry: React.FC = () => {
     } catch (e) { console.error(e); }
   };
 
-  useEffect(() => { fetchVisitors(); }, [filters, search]);
-  useEffect(() => { 
-    fetchVisitorTypes(); 
-    fetchEmployees();
-    fetchDepartments();
-  }, []);
+  useEffect(() => { fetchBlacklist(); }, [filters, search]);
+
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  useEffect(() => { fetchVisitorTypes(); fetchEmployees(); fetchDepartments(); }, []);
 
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>, field: 'photo' | 'id_proof') => {
     const file = e.target.files?.[0];

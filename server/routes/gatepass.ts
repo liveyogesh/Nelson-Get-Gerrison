@@ -156,11 +156,11 @@ router.post('/scan-entry', async (req: any, res: any) => {
       return res.status(400).json({ error: 'Cannot Check-In. Pass is not checked OUT.' });
     }
 
+    let graceMins = 0;
     let late_return = false;
     if (expectedReturn) {
-        let graceMins = 0;
         try {
-          const [settings]: any = await db.query("SELECT setting_value FROM system_settings WHERE setting_key = 'grace_period_mins'");
+          const [settings]: any = await db.query("SELECT setting_value FROM system_settings WHERE setting_key = 'late_return_grace_period'");
           if (settings.length > 0 && settings[0].setting_value) graceMins = parseInt(settings[0].setting_value, 10) || 0;
         } catch (e) {}
         
@@ -169,17 +169,41 @@ router.post('/scan-entry', async (req: any, res: any) => {
     }
 
     await db.execute(
-      'UPDATE gatepass_movements SET entry_time = NOW(), late_return = ?, verification_mode = ?, verified_by_user_id = ? WHERE request_id = ? AND entry_time IS NULL ORDER BY movement_id DESC LIMIT 1',
-      [late_return, 'QR_SCAN', userId, requestId]
+      'UPDATE gatepass_movements SET entry_time = NOW(), late_return = ?, verification_mode = ?, verified_by_user_id = ?, grace_period_applied = ? WHERE request_id = ? AND entry_time IS NULL ORDER BY movement_id DESC LIMIT 1',
+      [late_return, 'QR_SCAN', userId, late_return ? false : (expectedReturn && now > expectedReturn), requestId]
     );
 
     if (late_return) {
         const [lastMovement]: any = await db.query('SELECT movement_id FROM gatepass_movements WHERE request_id = ? ORDER BY movement_id DESC LIMIT 1', [requestId]);
         if(lastMovement && lastMovement.length > 0) {
+          const movementId = lastMovement[0].movement_id;
+          const employee_id = requestData[0].employee_id;
+          
           await db.execute(
-            'INSERT INTO gatepass_violations (request_id, movement_id, violation_type, severity, description) VALUES (?, ?, ?, ?, ?)',
-            [requestId, lastMovement[0].movement_id, 'LATE_RETURN', 'MEDIUM', 'Employee returned after expected time.']
+            'INSERT INTO gatepass_violations (request_id, movement_id, violation_type, severity, description, employee_id, expected_return_time, actual_return_time, grace_period_used) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
+            [requestId, movementId, 'LATE_RETURN', 'MEDIUM', 'Employee returned after expected time.', employee_id, expected_return_time, now, graceMins]
           );
+
+          await logAudit(userId, 'LATE_RETURN_RECORDED', 'GATEPASS_SERVICE', 'gatepass_violations', movementId, null, { request_id: requestId, employee_id, expected_return_time, actual_return_time: now, grace_period_used: graceMins }, req);
+          
+          const [notifyUsers]: any = await db.query(`
+              SELECT u.id FROM auth_users u 
+              JOIN auth_user_roles ur ON u.id = ur.user_id
+              JOIN auth_roles r ON ur.role_id = r.id 
+              WHERE r.role_name IN ('HR_MANAGER', 'SECURITY_HOD') OR r.role_code IN ('HR_MANAGER', 'SECURITY_HOD')
+           `);
+          for (const notifyUser of notifyUsers) {
+              try {
+                  const [notifResult]: any = await db.execute(
+                    'INSERT INTO system_notifications (recipient_user_id, notification_type, message) VALUES (?, ?, ?)',
+                    [notifyUser.id, 'LATE_RETURN_VIOLATION', `Employee ${employee_id} returned late for Gatepass ${requestId}. Expected: ${expected_return_time}, Actual: ${now}`]
+                  );
+                  await db.execute(
+                    'INSERT INTO notification_queue (notification_id, recipient_user_id, channel, payload, status) VALUES (?, ?, ?, ?, ?)',
+                    [notifResult.insertId, notifyUser.id, 'IN_APP', JSON.stringify({ type: 'LATE_RETURN', employeeId: employee_id, passId: requestId }), 'QUEUED']
+                  );
+              } catch (e) {}
+          }
         }
     }
 
@@ -195,56 +219,118 @@ router.post('/scan-entry', async (req: any, res: any) => {
 
 // Approval Route
 router.post('/:id/approve', authorizePermissions('APPROVE_GATEPASS'), async (req: any, res: any) => {
+  const connection = await (db as any).getConnection();
   try {
+    await connection.beginTransaction();
+
     const { status, remarks, approvalLevel } = req.body;
+    let finalStatus = status;
     const userId = req.user?.id || 1;
     const requestId = req.params.id;
 
-    // Fetch employee data if status is APPROVED to generate QR
+    // Fetch employee data and lock row
+    const [reqData]: any = await connection.query('SELECT employee_id, request_type, current_status FROM gatepass_requests WHERE request_id = ? FOR UPDATE', [requestId]);
+    if (!reqData || reqData.length === 0) {
+      await connection.rollback();
+      return res.status(404).json({ error: 'Gatepass not found' });
+    }
+
+    const currentStatus = reqData[0].current_status;
+
+    // Check immutability
+    if (['APPROVED', 'CANCELLED', 'REJECTED', 'CLOSED', 'OUT', 'RETURNED', 'VOID'].includes(currentStatus)) {
+      await connection.rollback();
+      return res.status(400).json({ error: 'Gatepass cannot be approved in its current state.' });
+    }
+
+    // Duplicate Check
+    const [existingApprovals]: any = await connection.query('SELECT * FROM gatepass_approvals WHERE request_id = ? FOR UPDATE', [requestId]);
+    if (existingApprovals && existingApprovals.length > 0) {
+       const userAlreadyApproved = existingApprovals.some((a: any) => a.approver_user_id === userId);
+       if (userAlreadyApproved) {
+         await connection.rollback();
+         return res.status(400).json({ error: 'You have already submitted an approval for this request.' });
+       }
+       const alreadyFinal = existingApprovals.some((a: any) => a.action === 'APPROVED' || a.action === 'REJECTED');
+       if (alreadyFinal) {
+         await connection.rollback();
+         return res.status(400).json({ error: 'This request has already been finalized by another authority.' });
+       }
+    }
+
+    // Priority/Emergency Primary Authority Check
+    if (['PRIORITY_PENDING', 'EMERGENCY_PENDING'].includes(currentStatus)) {
+       if (status === 'APPROVED') {
+           const [userRoleData]: any = await connection.query('SELECT r.role_name, r.role_code FROM auth_user_roles ur JOIN auth_roles r ON ur.role_id = r.id WHERE ur.user_id = ?', [userId]);
+           const userRoles = userRoleData.map((r: any) => r.role_name);
+           const userRoleCodes = userRoleData.map((r: any) => r.role_code);
+           
+           if (userRoles.includes('HOD') || userRoles.includes('HR_MANAGER') || userRoles.includes('SECURITY_HOD') || userRoleCodes.includes('HR_MANAGER') || userRoleCodes.includes('SECURITY_HOD')) {
+               finalStatus = 'APPROVED';
+           } else {
+               await connection.rollback();
+               return res.status(403).json({ error: 'Only Primary Authorities (HOD, HR_MANAGER, SECURITY_HOD) can approve Priority or Emergency requests.' });
+           }
+       } else {
+           finalStatus = status;
+       }
+    }
+
     let qrDataUrl = null;
     let secretCode = null;
     let qrText = null;
 
-    if (status === 'APPROVED') {
-      const [reqData]: any = await db.query('SELECT employee_id, request_type FROM gatepass_requests WHERE request_id = ?', [requestId]);
-      if (reqData && reqData.length > 0) {
-        const tokenPayload = { request_id: requestId, employee_id: reqData[0].employee_id, type: reqData[0].request_type, iat: Math.floor(Date.now() / 1000) };
-        qrText = jwt.sign(tokenPayload, JWT_SECRET);
-        qrDataUrl = await QRCode.toDataURL(qrText);
+    // Insert into approvals table
+    await connection.execute(
+      'INSERT INTO gatepass_approvals (request_id, approver_user_id, approval_level, action, remarks) VALUES (?, ?, ?, ?, ?)',
+      [requestId, userId, approvalLevel || 1, finalStatus, remarks]
+    );
 
-        let success = false;
-        while (!success) {
-          try {
-            secretCode = generateSecretCode();
-            await db.execute('UPDATE gatepass_requests SET qr_code_data = ?, secret_pass_code = ?, qr_token = ?, qr_generated_at = NOW() WHERE request_id = ?', [qrDataUrl, secretCode, qrText, requestId]);
-            success = true;
-          } catch (e: any) {
-            if (!e.message.includes('Duplicate entry')) {
-              throw e;
-            }
+    if (finalStatus === 'APPROVED') {
+      const tokenPayload = { request_id: requestId, employee_id: reqData[0].employee_id, type: reqData[0].request_type, iat: Math.floor(Date.now() / 1000) };
+      qrText = jwt.sign(tokenPayload, JWT_SECRET);
+      qrDataUrl = await QRCode.toDataURL(qrText);
+
+      let success = false;
+      let attempts = 0;
+      while (!success && attempts < 10) {
+        try {
+          secretCode = generateSecretCode();
+          await connection.execute('UPDATE gatepass_requests SET qr_code_data = ?, secret_pass_code = ?, qr_token = ?, qr_generated_at = NOW(), qr_generation_status = ? WHERE request_id = ?', [qrDataUrl, secretCode, qrText, 'GENERATED', requestId]);
+          success = true;
+        } catch (e: any) {
+          if (!e.message.includes('Duplicate entry')) {
+            throw e;
           }
+          attempts++;
         }
+      }
+      if (!success) {
+         throw new Error('Failed to generate unique secret code.');
       }
     }
 
-    // Update main request status if final or as needed
-    await db.execute(
+    // Update main request status
+    await connection.execute(
       'UPDATE gatepass_requests SET current_status = ? WHERE request_id = ?',
-      [status, requestId]
+      [finalStatus, requestId]
     );
 
-    // Insert into approvals table
-    await db.execute(
-      'INSERT INTO gatepass_approvals (request_id, approver_user_id, approval_level, action, remarks) VALUES (?, ?, ?, ?, ?)',
-      [requestId, userId, approvalLevel || 1, status, remarks]
-    );
+    await connection.commit();
+
+    if (finalStatus === 'APPROVED') {
+       await logAudit(userId, 'QR_GENERATED', 'GATEPASS_SERVICE', 'gatepass_requests', requestId, null, { qr_generation_status: 'GENERATED' }, req);
+    }
 
     // Audit Log
-    await logAudit(userId, 'GATEPASS_APPROVAL', 'GATEPASS_SERVICE', 'gatepass_requests', requestId, null, { status, remarks }, req);
+    await logAudit(userId, 'GATEPASS_APPROVAL', 'GATEPASS_SERVICE', 'gatepass_requests', requestId, { current_status: currentStatus }, { status: finalStatus, remarks }, req);
 
-    res.json({ success: true });
+    res.json({ success: true, newStatus: finalStatus });
   } catch (err: any) {
+    if (connection) await connection.rollback();
     res.status(500).json({ error: err.message });
+  } finally {
+    if (connection) connection.release();
   }
 });
 
@@ -258,7 +344,7 @@ router.post('/:id/movement', authorizePermissions('PROCESS_GATEPASS_MOVEMENT'), 
 
     // Fetch current request details
     const [requestData]: any = await db.query(
-      'SELECT current_status, expected_return_time, requested_exit_time FROM gatepass_requests WHERE request_id = ?',
+      'SELECT current_status, expected_return_time, requested_exit_time, employee_id, facility_id FROM gatepass_requests WHERE request_id = ?',
       [requestId]
     );
 
@@ -266,7 +352,7 @@ router.post('/:id/movement', authorizePermissions('PROCESS_GATEPASS_MOVEMENT'), 
       return res.status(404).json({ error: 'Gatepass not found' });
     }
 
-    const { current_status, expected_return_time } = requestData[0];
+    const { current_status, expected_return_time, employee_id, facility_id } = requestData[0];
     const now = new Date();
     const expectedReturn = expected_return_time ? new Date(expected_return_time) : null;
 
@@ -308,15 +394,15 @@ router.post('/:id/movement', authorizePermissions('PROCESS_GATEPASS_MOVEMENT'), 
 
       // RE-ENTRY: allowed regardless of time.
       let late_return = false;
+      let graceMins = 0;
       if (expectedReturn) {
-         let graceMins = 0;
          try {
-            const [settings]: any = await db.query("SELECT setting_value FROM system_settings WHERE setting_key = 'grace_period_mins'");
+            const [settings]: any = await db.query("SELECT setting_value FROM system_settings WHERE setting_key = 'late_return_grace_period'");
             if (settings.length > 0 && settings[0].setting_value) {
                 const parsed = parseInt(settings[0].setting_value, 10);
                 if (!isNaN(parsed) && parsed > 0) graceMins = parsed;
             }
-         } catch (e) { console.error("Could not fetch grace_period_mins", e); }
+         } catch (e) { console.error("Could not fetch late_return_grace_period", e); }
          
          const threshold = new Date(expectedReturn.getTime() + graceMins * 60 * 1000);
          if (now > threshold) {
@@ -326,8 +412,8 @@ router.post('/:id/movement', authorizePermissions('PROCESS_GATEPASS_MOVEMENT'), 
 
       // Update the latest movement record
       await db.execute(
-        'UPDATE gatepass_movements SET entry_time = NOW(), late_return = ?, verification_mode = ?, verified_by_user_id = ? WHERE request_id = ? AND entry_time IS NULL ORDER BY movement_id DESC LIMIT 1',
-        [late_return, vMode, userId, requestId]
+        'UPDATE gatepass_movements SET entry_time = NOW(), late_return = ?, verification_mode = ?, verified_by_user_id = ?, grace_period_applied = ? WHERE request_id = ? AND entry_time IS NULL ORDER BY movement_id DESC LIMIT 1',
+        [late_return, vMode, userId, late_return ? false : (expectedReturn && now > expectedReturn), requestId]
       );
 
       // Log Violation if late
@@ -335,9 +421,33 @@ router.post('/:id/movement', authorizePermissions('PROCESS_GATEPASS_MOVEMENT'), 
          const [lastMovement]: any = await db.query('SELECT movement_id FROM gatepass_movements WHERE request_id = ? ORDER BY movement_id DESC LIMIT 1', [requestId]);
          if(lastMovement && lastMovement.length > 0) {
            await db.execute(
-             'INSERT INTO gatepass_violations (request_id, movement_id, violation_type, severity, description) VALUES (?, ?, ?, ?, ?)',
-             [requestId, lastMovement[0].movement_id, 'LATE_RETURN', 'MEDIUM', 'Employee returned after expected time.']
+             'INSERT INTO gatepass_violations (request_id, movement_id, violation_type, severity, description, employee_id, expected_return_time, actual_return_time, grace_period_used) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
+             [requestId, lastMovement[0].movement_id, 'LATE_RETURN', 'MEDIUM', 'Employee returned after expected time.', employee_id, expected_return_time, now, graceMins]
            );
+
+           await logAudit(userId, 'LATE_RETURN_RECORDED', 'GATEPASS_SERVICE', 'gatepass_violations', lastMovement[0].movement_id, null, { request_id: requestId, employee_id, expected_return_time, actual_return_time: now, grace_period_used: graceMins }, req);
+           
+           // Notify HR asynchronously using notification queue
+           // Fetch HR_MANAGERs and SECURITY_HODs globally or for facility (using employee access mapping if available)
+           const [notifyUsers]: any = await db.query(`
+              SELECT u.id, r.role_name FROM auth_users u 
+              JOIN auth_user_roles ur ON u.id = ur.user_id
+              JOIN auth_roles r ON ur.role_id = r.id 
+              WHERE r.role_name IN ('HR_MANAGER', 'SECURITY_HOD') OR r.role_code IN ('HR_MANAGER', 'SECURITY_HOD')
+           `);
+
+           for (const notifyUser of notifyUsers) {
+               try {
+                  const [notifResult]: any = await db.execute(
+                    'INSERT INTO system_notifications (recipient_user_id, notification_type, message) VALUES (?, ?, ?)',
+                    [notifyUser.id, 'LATE_RETURN_VIOLATION', `Employee ${employee_id} returned late for Gatepass ${requestId}. Expected: ${expected_return_time}, Actual: ${now}`]
+                  );
+                  await db.execute(
+                    'INSERT INTO notification_queue (notification_id, recipient_user_id, channel, payload, status) VALUES (?, ?, ?, ?, ?)',
+                    [notifResult.insertId, notifyUser.id, 'IN_APP', JSON.stringify({ type: 'LATE_RETURN', employeeId: employee_id, passId: requestId }), 'QUEUED']
+                  );
+               } catch (e: any) { console.error("Notification Queue Error:", e.message); }
+           }
          }
       }
 
@@ -382,7 +492,7 @@ router.get('/lookup', authorizePermissions('PROCESS_GATEPASS_MOVEMENT', 'SUPER_A
          return res.status(429).json({ error: 'Too many invalid manual code attempts. Please wait 15 mins.' });
       }
 
-      query = 'SELECT r.*, e.first_name, e.last_name FROM gatepass_requests r JOIN hr_employees e ON r.employee_id = e.employee_id WHERE r.secret_pass_code = ?';
+      query = 'SELECT r.*, e.first_name, e.last_name, e.employee_code, e.photo_url, d.department_name, des.designation_name FROM gatepass_requests r JOIN hr_employees e ON r.employee_id = e.employee_id LEFT JOIN hr_departments d ON e.department_id = d.department_id LEFT JOIN hr_designations des ON e.designation_id = des.designation_id WHERE r.secret_pass_code = ?';
       params = [code];
     } else if (qr) {
       // Validate JWT
@@ -392,10 +502,10 @@ router.get('/lookup', authorizePermissions('PROCESS_GATEPASS_MOVEMENT', 'SUPER_A
       } catch (e) {
         return res.status(400).json({ error: 'Invalid or forged QR token' });
       }
-      query = 'SELECT r.*, e.first_name, e.last_name FROM gatepass_requests r JOIN hr_employees e ON r.employee_id = e.employee_id WHERE r.request_id = ?';
+      query = 'SELECT r.*, e.first_name, e.last_name, e.employee_code, e.photo_url, d.department_name, des.designation_name FROM gatepass_requests r JOIN hr_employees e ON r.employee_id = e.employee_id LEFT JOIN hr_departments d ON e.department_id = d.department_id LEFT JOIN hr_designations des ON e.designation_id = des.designation_id WHERE r.request_id = ?';
       params = [decoded.request_id];
     } else if (empId) {
-      query = 'SELECT r.*, e.first_name, e.last_name FROM gatepass_requests r JOIN hr_employees e ON r.employee_id = e.employee_id WHERE e.employee_code = ? ORDER BY r.request_id DESC LIMIT 1';
+      query = 'SELECT r.*, e.first_name, e.last_name, e.employee_code, e.photo_url, d.department_name, des.designation_name FROM gatepass_requests r JOIN hr_employees e ON r.employee_id = e.employee_id LEFT JOIN hr_departments d ON e.department_id = d.department_id LEFT JOIN hr_designations des ON e.designation_id = des.designation_id WHERE e.employee_code = ? ORDER BY r.request_id DESC LIMIT 1';
       params = [empId];
     } else {
       return res.status(400).json({ error: 'Provide qr, empId, or code' });
@@ -423,7 +533,15 @@ router.get('/lookup', authorizePermissions('PROCESS_GATEPASS_MOVEMENT', 'SUPER_A
         id: pass.request_id,
         type: pass.request_type,
         employeeName: (pass.first_name + ' ' + (pass.last_name || '')).trim(),
-        status: pass.current_status
+        employeeCode: pass.employee_code,
+        department: pass.department_name,
+        designation: pass.designation_name,
+        photoUrl: pass.photo_url,
+        reason: pass.reason,
+        status: pass.current_status,
+        expectedReturnTime: pass.expected_return_time,
+        is_priority: pass.is_priority,
+        is_emergency: pass.is_emergency
     });
   } catch (err: any) {
     res.status(500).json({ error: err.message });
@@ -532,7 +650,7 @@ router.post('/:id/cancel', authorizePermissions('gatepass.create', 'MANAGE_OWN_G
       return res.status(400).json({ error: 'Cancellation reason is required.' });
     }
 
-    const [reqData]: any = await db.query('SELECT current_status FROM gatepass_requests WHERE request_id = ?', [requestId]);
+    const [reqData]: any = await db.query('SELECT current_status, qr_code_data FROM gatepass_requests WHERE request_id = ?', [requestId]);
     if (!reqData || reqData.length === 0) return res.status(404).json({ error: 'Gatepass not found' });
     
     // Check if status allows cancellation
@@ -542,15 +660,78 @@ router.post('/:id/cancel', authorizePermissions('gatepass.create', 'MANAGE_OWN_G
     }
 
     await db.execute(
-      'UPDATE gatepass_requests SET current_status = ?, cancelled_by = ?, cancelled_at = NOW(), cancellation_reason = ? WHERE request_id = ?',
+      'UPDATE gatepass_requests SET current_status = ?, cancelled_by = ?, cancelled_at = NOW(), cancellation_reason = ?, qr_code_data = NULL, secret_pass_code = NULL, qr_token = NULL, qr_generation_status = "INVALID" WHERE request_id = ?',
       ['CANCELLED', userId, reason, requestId]
     );
 
     // Also stop/void existing pending approvals if needed, or notification queue items (pseudo-logic as requested)
     
-    await logAudit(userId, 'REQUEST_CANCELLED_BY_EMPLOYEE', 'GATEPASS_SERVICE', 'gatepass_requests', requestId, { previous_status: reqData[0].current_status }, { reason }, req);
+    await logAudit(userId, 'REQUEST_CANCELLED_BY_EMPLOYEE', 'GATEPASS_SERVICE', 'gatepass_requests', requestId, { previous_status: reqData[0].current_status }, { reason, ip: req.ip, user_agent: req.headers['user-agent'] }, req);
+    
+    if (reqData[0].qr_code_data) {
+       await logAudit(userId, 'QR_INVALIDATED', 'GATEPASS_SERVICE', 'gatepass_requests', requestId, { qr_generation_status: 'GENERATED' }, { qr_generation_status: 'INVALID', reason: 'User Cancelled' }, req);
+    }
 
     res.json({ success: true, message: 'Request cancelled successfully.' });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Get Pending Emergency Requests
+router.get('/emergency-pending', authorizePermissions('PROCESS_GATEPASS_MOVEMENT', 'SUPER_ADMIN'), async (req: any, res: any) => {
+  try {
+    const facilityId = req.facilityId || 1;
+    const [rows] = await db.query(`
+      SELECT r.request_id, r.request_type, r.reason, r.current_status, e.first_name, e.last_name, e.employee_code
+      FROM gatepass_requests r
+      JOIN hr_employees e ON r.employee_id = e.employee_id
+      WHERE r.current_status = 'EMERGENCY_PENDING' AND r.facility_id = ?
+      ORDER BY r.created_at ASC
+    `, [facilityId]);
+    
+    res.json(rows);
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Provisional Movement Override
+router.post('/:id/provisional-override', authorizePermissions('PROCESS_GATEPASS_MOVEMENT', 'SUPER_ADMIN'), async (req: any, res: any) => {
+  try {
+    const { reason, movementType } = req.body;
+    const userId = req.user?.id || 1;
+    const requestId = req.params.id;
+
+    if (!reason || !movementType) {
+      return res.status(400).json({ error: 'Reason and movementType (ENTRY/EXIT) are required.' });
+    }
+
+    const [reqData]: any = await db.query('SELECT current_status, employee_id, facility_id FROM gatepass_requests WHERE request_id = ?', [requestId]);
+    if (!reqData || reqData.length === 0) return res.status(404).json({ error: 'Gatepass not found' });
+    
+    const pass = reqData[0];
+    
+    // Mark movement
+    if (movementType === 'EXIT') {
+      await db.execute(
+        'INSERT INTO gatepass_movements (request_id, exit_time, security_guard_id, verification_mode, override_reason) VALUES (?, NOW(), ?, ?, ?)',
+        [requestId, userId, 'OVERRIDE', reason]
+      );
+      await db.execute('UPDATE gatepass_requests SET current_status = ? WHERE request_id = ?', ['OUT', requestId]);
+    } else {
+      await db.execute(
+        'UPDATE gatepass_movements SET entry_time = NOW(), late_return = ?, verification_mode = ?, override_reason = ? WHERE request_id = ? AND entry_time IS NULL ORDER BY movement_id DESC LIMIT 1',
+        [false, 'OVERRIDE', reason, requestId]
+      );
+      await db.execute('UPDATE gatepass_requests SET current_status = ? WHERE request_id = ?', ['RETURNED', requestId]);
+    }
+
+    await logAudit(userId, 'PROVISIONAL_MOVEMENT_ALLOWED', 'GATEPASS_SERVICE', 'gatepass_requests', requestId, { previous_status: pass.current_status }, { 
+       reason, approved_by_security_user: userId, employee_id: pass.employee_id, facility_id: pass.facility_id, movementType, ip: req.ip, user_agent: req.headers['user-agent']
+    }, req);
+
+    res.json({ success: true, message: 'Provisional movement recorded.' });
   } catch (err: any) {
     res.status(500).json({ error: err.message });
   }

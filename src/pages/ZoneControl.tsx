@@ -35,7 +35,6 @@ const ZoneControl: React.FC = () => {
   };
 
   const fetchLogs = async () => {
-    setLoading(true);
     try {
       let url = `/api/zones/logs?sort=${sortOrder}`;
       if (filterDate) url += `&date=${filterDate}`;
@@ -49,15 +48,10 @@ const ZoneControl: React.FC = () => {
       setLogs(data);
     } catch (e) {
       console.error('Failed to fetch logs', e);
-    } finally {
-      setLoading(false);
     }
   };
 
-  useEffect(() => {
-    fetchZones();
-    fetchLogs();
-  }, [filterDate, filterViolation, sortOrder]);
+  useEffect(() => { fetchZones(); fetchLogs(); }, [filterDate, filterViolation, sortOrder]);
 
   const recordAccess = async (e: React.FormEvent) => {
     e.preventDefault();

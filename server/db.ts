@@ -413,6 +413,7 @@ export const initDB = async () => {
       escalation_target_role VARCHAR(50),
       escalation_timestamp DATETIME,
       qr_generated_at DATETIME,
+      qr_generation_status VARCHAR(50) DEFAULT 'PENDING',
       secret_pass_code VARCHAR(100),
       qr_token VARCHAR(255),
       cancelled_by INT UNSIGNED,

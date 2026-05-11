@@ -16,23 +16,27 @@ export default function AdminEmployeeDirectory() {
 
   // Edit Modal State
   const [editingEmp, setEditingEmp] = useState<any>(null);
-  const [editForm, setEditForm] = useState({ photo_url: '', employment_status: 'ACTIVE' });
+  const [editForm, setEditForm] = useState({ photo_url: '', employment_status: 'ACTIVE', reporting_manager_id: '' });
   
   // Create Modal State
   const [showCreate, setShowCreate] = useState(false);
   const [createForm, setCreateForm] = useState({
      employee_code: '', first_name: '', last_name: '', email: '', mobile: '', 
-     department_id: '', designation_id: '', photo_url: ''
+     department_id: '', designation_id: '', photo_url: '', reporting_manager_id: ''
   });
+
+  const [activeEmployees, setActiveEmployees] = useState<any[]>([]);
 
   const fetchFilters = async () => {
     try {
-      const [deptRes, desRes] = await Promise.all([
+      const [deptRes, desRes, actEmpRes] = await Promise.all([
         axios.get(`/api/visitors/hr/departments`),
-        axios.get(`/api/visitors/hr/designations`)
+        axios.get(`/api/visitors/hr/designations`),
+        axios.get(`/api/hrms/employees/active`)
       ]);
       setDepartments(Array.isArray(deptRes.data) ? deptRes.data : []);
       setDesignations(Array.isArray(desRes.data) ? desRes.data : []);
+      setActiveEmployees(Array.isArray(actEmpRes.data) ? actEmpRes.data : []);
     } catch (e) { console.error(e); }
   };
 
@@ -46,8 +50,8 @@ export default function AdminEmployeeDirectory() {
     setLoading(false);
   };
 
-  useEffect(() => { fetchFilters(); }, []);
-  useEffect(() => { fetchEmployees(); }, [dept, desig, status]);
+  useEffect(() => { fetchFilters(); }, [fetchFilters]);
+  useEffect(() => { fetchEmployees(); }, [dept, desig, status, search, fetchEmployees]); // Added search to dependencies to avoid warnings
 
   const handleSearchChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const value = e.target.value;
@@ -69,7 +73,7 @@ export default function AdminEmployeeDirectory() {
   const handleUpdate = async (e: React.FormEvent) => {
     e.preventDefault();
     try {
-      const response = await axios.put(`/api/visitors/employees/${editingEmp.employee_id}`, editForm);
+      const response = await axios.put(`/api/hrms/employees/${editingEmp.employee_id}`, editForm); // Switched to hrms endpoint for updates
       if (response.status === 200) {
         setEditingEmp(null);
         fetchEmployees();
@@ -80,19 +84,19 @@ export default function AdminEmployeeDirectory() {
   const handleCreate = async (e: React.FormEvent) => {
     e.preventDefault();
     try {
-      const response = await axios.post(`/api/visitors/employees`, createForm);
+      const response = await axios.post(`/api/hrms/employees`, createForm); // Switched to hrms endpoint
       if (response.status === 200) {
         setShowCreate(false);
         setCreateForm({
           employee_code: '', first_name: '', last_name: '', email: '', mobile: '', 
-          department_id: '', designation_id: '', photo_url: ''
+          department_id: '', designation_id: '', photo_url: '', reporting_manager_id: ''
         });
         fetchEmployees();
       } else {
-         const err = await response.json();
+         const err = response.data;
          alert(err.error || 'Failed to create employee');
       }
-    } catch (e) { console.error(e); }
+    } catch (e: any) { alert(e.response?.data?.error || e.message); console.error(e); }
   };
 
   return (
@@ -287,6 +291,22 @@ export default function AdminEmployeeDirectory() {
                 </div>
               </div>
 
+              <div>
+                <label className="text-[10px] font-bold uppercase tracking-widest text-slate-500 block mb-2">Reporting Manager</label>
+                <select 
+                  value={editForm.reporting_manager_id}
+                  onChange={(e) => setEditForm({...editForm, reporting_manager_id: e.target.value})}
+                  className="w-full border border-slate-200 rounded-xl px-4 py-2.5 text-sm outline-none focus:ring-2 focus:ring-[#003366]"
+                >
+                  <option value="">None</option>
+                  {activeEmployees.filter(emp => emp.employee_id !== editingEmp?.employee_id).map(emp => (
+                    <option key={emp.employee_id} value={emp.employee_id}>
+                      {emp.employee_code} - {emp.first_name} {emp.last_name}
+                    </option>
+                  ))}
+                </select>
+              </div>
+
               <div className="flex justify-end gap-3 pt-4 border-t border-slate-50">
                 <button type="button" onClick={() => setEditingEmp(null)} className="px-5 py-2.5 text-xs font-bold text-slate-500 hover:text-slate-700">Discard Changes</button>
                 <button type="submit" className="px-8 py-2.5 bg-[#003366] text-white rounded-xl text-xs font-bold uppercase tracking-widest shadow-lg shadow-blue-200 hover:bg-[#002244]">Save Record</button>
@@ -357,6 +377,20 @@ export default function AdminEmployeeDirectory() {
                     <select required value={createForm.designation_id} onChange={e => setCreateForm({...createForm, designation_id: e.target.value})} className="w-full border rounded-lg px-3 py-2 text-sm">
                       <option value="">Select Designation</option>
                       {designations.map((d: any) => <option key={d.designation_id} value={d.designation_id}>{d.designation_name}</option>)}
+                    </select>
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-1 gap-4">
+                  <div>
+                    <label className="text-xs font-bold uppercase text-slate-500 block mb-1">Reporting Manager</label>
+                    <select value={createForm.reporting_manager_id} onChange={e => setCreateForm({...createForm, reporting_manager_id: e.target.value})} className="w-full border rounded-lg px-3 py-2 text-sm">
+                      <option value="">None</option>
+                      {activeEmployees.map(emp => (
+                        <option key={emp.employee_id} value={emp.employee_id}>
+                          {emp.employee_code} - {emp.first_name} {emp.last_name}
+                        </option>
+                      ))}
                     </select>
                   </div>
                 </div>
